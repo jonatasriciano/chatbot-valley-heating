@@ -1,10 +1,9 @@
 import { Router } from "express";
 import { handleChat } from "../controllers/chatController";
-import { authenticateRequest } from "../middleware/authMiddleware";
 
 const router = Router();
 
-// Apply the authentication middleware on chat endpoint.
-router.post("/chat", authenticateRequest, handleChat);
+// Route for handling chat requests
+router.post("/", handleChat);
 
 export default router;

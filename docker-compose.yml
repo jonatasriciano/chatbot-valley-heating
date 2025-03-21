@@ -4,7 +4,7 @@ services:
     container_name: chatbot-valley-heating-container
     restart: always
     ports:
-      - "30001:3000"
+      - "3000:3000"
     depends_on:
       mongodb:
         condition: service_healthy
@@ -14,7 +14,7 @@ services:
     env_file:
       - .env
     environment:
-      - MONGO_URI=mongodb://chatbot-valley-heating-mongo-container:27017/chatbotDB
+      - MONGO_URI=mongodb://chatbot-valley-heating-mongo-container:27017/chatbot_valley_heating
     command: npm run dev
 
   mongodb:
@@ -27,7 +27,7 @@ services:
       - chatbot-valley-heating_mongo_data:/data/db
       - chatbot-valley-heating_mongo_config:/data/configdb
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      test: echo 'db.runCommand("ping").ok' | mongosh chatbot-valley-heating-mongo-container:27017/test --quiet
       interval: 10s
       retries: 5
       start_period: 5s
