@@ -5,59 +5,102 @@ import Conversation, { IConversation } from "../models/Conversation";
 dotenv.config();
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY || "",
 });
 
+/**
+ * Chat Service to handle interactions with OpenAI Assistant API.
+ */
 class ChatService {
-  async translateToEnglish(text: string): Promise<string> {
-    try {
-      const translationResponse = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: "Translate the following text to English." },
-          { role: "user", content: text },
-        ],
-        max_tokens: 100,
-      });
+  private assistantId: string | undefined;
 
-      return translationResponse.choices[0]?.message?.content?.trim() || text;
-    } catch (error: any) {
-      console.error("❌ Error translating text:", error.response?.data || error.message);
-      return text;
+  constructor() {
+    this.assistantId = (process.env.OPENAI_ASSISTANT_ID) as string;
+  }
+
+  /**
+   * Retrieves or creates a thread for the conversation.
+   * @param sessionId - The unique session identifier for the conversation.
+   * @returns The thread ID associated with the conversation.
+   */
+  private async getOrCreateThread(sessionId: string): Promise<string> {
+    // Tentar encontrar conversa existente no MongoDB
+    let conversation = await Conversation.findOne({ sessionId });
+  
+    // Retornar threadId existente se encontrado
+    if (conversation && conversation.threadId) {
+      return conversation.threadId;
+    }
+  
+    // Se não encontrado, criar nova thread na OpenAI
+    try {
+      const thread = await openai.beta.threads.create();
+  
+      if (!thread || !thread.id) {
+        throw new Error('OpenAI returned undefined thread ID.');
+      }
+  
+      // Salvar nova conversa no MongoDB
+      conversation = await Conversation.create({
+        sessionId,
+        threadId: thread.id,
+        messages: [],
+      });
+  
+      console.log('✅ Successfully created and stored new thread:', thread.id);
+      return thread.id;
+    } catch (error) {
+      console.error('❌ Error creating or storing new thread:', error);
+      throw error;  // propague o erro para tratar no nível superior
     }
   }
 
+  /**
+   * Sends a message to the OpenAI Assistant and retrieves a response.
+   * @param sessionId - The session identifier.
+   * @param message - The user message.
+   * @returns The assistant's response message.
+   */
   async getResponse(sessionId: string, message: string): Promise<string> {
     try {
-      const translatedMessage = await this.translateToEnglish(message);
-
-      // Retrieve conversation history
-      const conversation = await Conversation.findOne({ sessionId });
-      const messages = conversation ? conversation.messages : [];
-
-      messages.push({ role: "user", content: translatedMessage, timestamp: new Date() });
-
-      const response = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: "You are a customer support chatbot for Valley Heating. Help the customer with their heating service inquiries. Answer concisely and professionally." },
-          ...messages,
-        ],
-        max_tokens: 200,
-        temperature: 0.7,
-      });
-
-      const assistantReply = response.choices[0]?.message?.content?.trim() || "I'm sorry, I couldn't process that request.";
-
-      // Save updated conversation history
-      if (!conversation) {
-        await Conversation.create({ sessionId, messages: [{ role: "user", content: translatedMessage, timestamp: new Date() }, { role: "assistant", content: assistantReply, timestamp: new Date() }] });
-      } else {
-        conversation.messages.push({ role: "assistant", content: assistantReply, timestamp: new Date() });
-        await conversation.save();
+      const threadId = await this.getOrCreateThread(sessionId);
+      if (typeof this.assistantId !== "string") {
+        console.error("❌ assistantId is not valid.");
+        return "Assistant configuration error.";
       }
 
-      return assistantReply;
+      // Add user message to thread
+      await openai.beta.threads.messages.create(threadId, {
+        role: "user",
+        content: message,
+      });
+
+      // Create a run with the assistant
+      const run = await openai.beta.threads.runs.create(threadId, {
+        assistant_id: this.assistantId,
+      });
+
+      // Wait for the run to complete
+      let runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
+      while (runStatus.status !== "completed") {
+        if (runStatus.status === "failed" || runStatus.status === "cancelled") {
+          console.error("❌ Run failed:", runStatus.last_error);
+          return "I'm sorry, something went wrong while processing your request.";
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
+      }
+
+      // Retrieve the assistant's latest response
+      const messages = await openai.beta.threads.messages.list(threadId);
+      const assistantMessage = messages.data.find((msg) => msg.role === "assistant");
+
+      let responseText = "I'm sorry, I couldn't process your request.";
+      if (assistantMessage && "text" in assistantMessage.content[0]) {
+        responseText = assistantMessage.content[0].text.value;
+      }
+
+      return responseText;
     } catch (error: any) {
       console.error("❌ Error in getResponse:", error.response?.data || error.message);
       return "I'm sorry, something went wrong.";
